@@ -1,0 +1,1957 @@
+     1→/**
+     2→ * Tarsul - تراسل | Main Chat Layout
+     3→ * Enterprise-grade encrypted chat interface with sidebar, message area, and E2EE.
+     4→ * Includes: dark mode, online users panel, user profile dialog, emoji picker,
+     5→ * message actions, date separators, typing indicator, toast notifications, pinned messages.
+     6→ */
+     7→'use client';
+     8→
+     9→import { useEffect, useState, useRef, useCallback } from 'react';
+    10→import { useAuthStore } from '@/store/auth-store';
+    11→import { useChatStore, Message } from '@/store/chat-store';
+    12→import { useSocket } from '@/hooks/use-socket';
+    13→import { CryptoManager } from '@/lib/crypto';
+    14→import { useTheme } from 'next-themes';
+    15→import { toast } from 'sonner';
+    16→import { Button } from '@/components/ui/button';
+    17→import { Input } from '@/components/ui/input';
+    18→import { ScrollArea } from '@/components/ui/scroll-area';
+    19→import { Avatar, AvatarFallback } from '@/components/ui/avatar';
+    20→import { Badge } from '@/components/ui/badge';
+    21→import { Separator } from '@/components/ui/separator';
+    22→import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+    23→import {
+    24→  Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter,
+    25→} from '@/components/ui/dialog';
+    26→import { Label } from '@/components/ui/label';
+    27→import {
+    28→  Hash, MessageCircle, Send, Shield, Lock, Plus, Search, Settings, LogOut,
+    29→  Menu, X, Users, ChevronLeft, Loader2,
+    30→  KeyRound, Building2, ShieldCheck, Pin, Reply,
+    31→  Paperclip, Smile, AtSign, Mic, Phone, Video, Edit3, Sun, Moon,
+    32→  Copy, Trash2, Check, CheckCheck, PanelRight, TrendingUp,
+    33→  FileText, Image as ImageIcon, Download, Loader2 as DownloadLoader,
+    34→} from 'lucide-react';
+    35→import {
+    36→  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
+    37→  DropdownMenuSeparator,
+    38→} from '@/components/ui/dropdown-menu';
+    39→import { TweetsPanel } from '@/components/chat/tweets-panel';
+    40→import { CallDialog, IncomingCallDialog, ActiveCallScreen } from '@/components/chat/call-ui';
+    41→import { useCall } from '@/hooks/use-call';
+    42→import { FileUploadDialog, type UploadedFile } from '@/components/chat/file-upload-dialog';
+    43→
+    44→// ========================
+    45→// Utility: Format time (HH:MM)
+    46→// ========================
+    47→function formatTime(dateStr: string): string {
+    48→  const date = new Date(dateStr);
+    49→  return date.toLocaleTimeString('ar-LY', { hour: '2-digit', minute: '2-digit' });
+    50→}
+    51→
+    52→// ========================
+    53→// Utility: Date separator label
+    54→// ========================
+    55→function getDateSeparator(dateStr: string): string {
+    56→  const date = new Date(dateStr);
+    57→  const now = new Date();
+    58→  const isToday = date.toDateString() === now.toDateString();
+    59→  if (isToday) return 'اليوم';
+    60→
+    61→  const yesterday = new Date(now);
+    62→  yesterday.setDate(yesterday.getDate() - 1);
+    63→  if (date.toDateString() === yesterday.toDateString()) return 'أمس';
+    64→
+    65→  return date.toLocaleDateString('ar-LY', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+    66→}
+    67→
+    68→// ========================
+    69→// Utility: Check if two dates are same day
+    70→// ========================
+    71→function isSameDay(a: string, b: string): boolean {
+    72→  return new Date(a).toDateString() === new Date(b).toDateString();
+    73→}
+    74→
+    75→// ========================
+    76→// Utility: Get initials
+    77→// ========================
+    78→function getInitials(name: string): string {
+    79→  if (!name) return '?';
+    80→  return name.charAt(0);
+    81→}
+    82→
+    83→// ========================
+    84→// Status Dot
+    85→// ========================
+    86→function StatusDot({ status, size = 'sm' }: { status: string; size?: 'sm' | 'md' }) {
+    87→  const color = status === 'online' ? 'bg-emerald-500' : status === 'away' ? 'bg-amber-500' : status === 'do_not_disturb' ? 'bg-red-500' : 'bg-gray-400 dark:bg-gray-600';
+    88→  const sizeClass = size === 'md' ? 'w-3.5 h-3.5' : 'w-2.5 h-2.5';
+    89→  const ringClass = size === 'md' ? 'ring-[2.5px]' : 'ring-2';
+    90→  const ringColor = 'ring-white dark:ring-gray-900';
+    91→  return (
+    92→    <span className={`inline-block ${sizeClass} rounded-full ${color} ${ringClass} ${ringColor}`} />
+    93→  );
+    94→}
+    95→
+    96→// ========================
+    97→// Encryption Badge
+    98→// ========================
+    99→function EncryptionBadge() {
+   100→  return (
+   101→    <TooltipProvider>
+   102→      <Tooltip>
+   103→        <TooltipTrigger asChild>
+   104→          <div className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400">
+   105→            <ShieldCheck className="w-3.5 h-3.5" />
+   106→            <span className="text-[10px] font-medium">E2EE</span>
+   107→          </div>
+   108→        </TooltipTrigger>
+   109→        <TooltipContent>
+   110→          <p>مشفّر من الطرف إلى الطرف (AES-256-GCM + RSA-OAEP)</p>
+   111→        </TooltipContent>
+   112→      </Tooltip>
+   113→    </TooltipProvider>
+   114→  );
+   115→}
+   116→
+   117→// ========================
+   118→// User Avatar
+   119→// ========================
+   120→function UserAvatar({ name, size = 'sm' }: { name: string; size?: 'sm' | 'md' | 'lg' }) {
+   121→  const initials = getInitials(name);
+   122→  const sizeClass = size === 'lg' ? 'w-12 h-12 text-lg' : size === 'md' ? 'w-9 h-9 text-sm' : 'w-8 h-8 text-xs';
+   123→  return (
+   124→    <Avatar className={sizeClass}>
+   125→      <AvatarFallback className="bg-gradient-to-br from-emerald-100 to-teal-100 dark:from-emerald-900/40 dark:to-teal-900/40 text-emerald-700 dark:text-emerald-300 font-semibold">
+   126→        {initials}
+   127→      </AvatarFallback>
+   128→    </Avatar>
+   129→  );
+   130→}
+   131→
+   132→// ========================
+   133→// Simple Emoji Picker
+   134→// ========================
+   135→function EmojiPicker({ onSelect, onClose }: { onSelect: (emoji: string) => void; onClose: () => void }) {
+   136→  const emojis = [
+   137→    '😀','😂','😊','🥰','😎','🤔','😅','😢','👍','👎',
+   138→    '❤️','🔥','✅','⭐','🎉','🙏','💪','🤝','👏','💯',
+   139→    '🚀','💡','📌','🔒','🔐','✨','🎯','📝','💬','🔔',
+   140→  ];
+   141→  return (
+   142→    <div className="absolute bottom-full mb-2 left-0 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl shadow-xl p-2 grid grid-cols-6 gap-1 z-50 animate-in fade-in slide-in-from-bottom-2 duration-200" dir="ltr">
+   143→      {emojis.map((e) => (
+   144→        <button
+   145→          key={e}
+   146→          onClick={() => { onSelect(e); onClose(); }}
+   147→          className="w-9 h-9 flex items-center justify-center rounded-lg hover:bg-emerald-50 dark:hover:bg-emerald-900/30 transition-colors text-lg"
+   148→        >
+   149→          {e}
+   150→        </button>
+   151→      ))}
+   152→    </div>
+   153→  );
+   154→}
+   155→
+   156→// ========================
+   157→// User Profile Dialog
+   158→// ========================
+   159→interface ProfileUserData {
+   160→  id: string;
+   161→  name: string;
+   162→  email?: string;
+   163→  department?: string | null;
+   164→  role?: string;
+   165→  status?: string;
+   166→  publicKey?: string | null;
+   167→}
+   168→
+   169→function UserProfileDialog({
+   170→  user: profileUser,
+   171→  open,
+   172→  onOpenChange,
+   173→}: {
+   174→  user: ProfileUserData | null;
+   175→  open: boolean;
+   176→  onOpenChange: (open: boolean) => void;
+   177→}) {
+   178→  const { token } = useAuthStore();
+   179→  const startDM = async () => {
+   180→    if (!token || !profileUser) return;
+   181→    try {
+   182→      const res = await fetch('/api/dm', {
+   183→        method: 'POST',
+   184→        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+   185→        body: JSON.stringify({ recipientId: profileUser.id }),
+   186→      });
+   187→      const data = await res.json();
+   188→      if (data.conversation) {
+   189→        useChatStore.getState().addConversation(data.conversation);
+   190→        useChatStore.getState().setActiveConversation(data.conversation.id);
+   191→        onOpenChange(false);
+   192→      }
+   193→    } catch (err) {
+   194→      console.error('Start DM error:', err);
+   195→    }
+   196→  };
+   197→
+   198→  const fingerprint = profileUser?.publicKey
+   199→    ? profileUser.publicKey.slice(-16).replace(/[^\w]/g, '').toUpperCase()
+   200→    : null;
+   201→
+   202→  const roleLabel = profileUser?.role === 'admin' ? 'مدير النظام' : profileUser?.role === 'manager' ? 'مدير' : 'عضو';
+   203→
+   204→  return (
+   205→    <Dialog open={open} onOpenChange={onOpenChange} dir="rtl">
+   206→      <DialogContent className="sm:max-w-md">
+   207→        <DialogHeader>
+   208→          <DialogTitle className="sr-only">ملف المستخدم</DialogTitle>
+   209→        </DialogHeader>
+   210→        {profileUser && (
+   211→          <div className="flex flex-col items-center text-center space-y-4">
+   212→            <div className="relative">
+   213→              <UserAvatar name={profileUser.name} size="lg" />
+   214→              <span className="absolute bottom-0 left-0"><StatusDot status={profileUser.status || 'offline'} size="md" /></span>
+   215→            </div>
+   216→            <div>
+   217→              <h3 className="text-lg font-bold text-foreground">{profileUser.name}</h3>
+   218→              {profileUser.email && (
+   219→                <p className="text-sm text-muted-foreground mt-0.5" dir="ltr">{profileUser.email}</p>
+   220→              )}
+   221→            </div>
+   222→            <div className="flex items-center gap-2 flex-wrap justify-center">
+   223→              <Badge variant="secondary" className="text-xs">{roleLabel}</Badge>
+   224→              {profileUser.department && (
+   225→                <Badge variant="outline" className="text-xs">
+   226→                  <Building2 className="w-3 h-3 ml-1" />
+   227→                  {profileUser.department}
+   228→                </Badge>
+   229→              )}
+   230→            </div>
+   231→            {fingerprint && (
+   232→              <div className="w-full p-3 bg-muted rounded-lg">
+   233→                <p className="text-[10px] font-medium text-muted-foreground mb-1 flex items-center justify-center gap-1">
+   234→                  <KeyRound className="w-3 h-3" />
+   235→                  بصمة المفتاح العام
+   236→                </p>
+   237→                <p className="text-xs font-mono text-foreground tracking-wider" dir="ltr">{fingerprint}</p>
+   238→              </div>
+   239→            )}
+   240→            <div className="flex gap-2 w-full">
+   241→              <Button onClick={startDM} className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white">
+   242→                <MessageCircle className="w-4 h-4 ml-2" />
+   243→                إرسال رسالة
+   244→              </Button>
+   245→              {profileUser.department && (
+   246→                <Button variant="outline" className="flex-1">
+   247→                  <Building2 className="w-4 h-4 ml-2" />
+   248→                  القسم
+   249→                </Button>
+   250→              )}
+   251→            </div>
+   252→          </div>
+   253→        )}
+   254→      </DialogContent>
+   255→    </Dialog>
+   256→  );
+   257→}
+   258→
+   259→// ========================
+   260→// Online Users Panel
+   261→// ========================
+   262→function OnlineUsersPanel({
+   263→  open,
+   264→  onClose,
+   265→}: {
+   266→  open: boolean;
+   267→  onClose: () => void;
+   268→}) {
+   269→  const { token } = useAuthStore();
+   270→  const [allUsers, setAllUsers] = useState<Array<{
+   271→    id: string; name: string; email: string; department: string | null; status: string; role: string;
+   272→  }>>([]);
+   273→  const [profileUser, setProfileUser] = useState<ProfileUserData | null>(null);
+   274→  const [profileOpen, setProfileOpen] = useState(false);
+   275→
+   276→  useEffect(() => {
+   277→    if (!open || !token) return;
+   278→    fetch('/api/users?excludeSelf=false', { headers: { Authorization: `Bearer ${token}` } })
+   279→      .then((r) => r.json())
+   280→      .then((d) => { if (d.users) setAllUsers(d.users); })
+   281→      .catch(console.error);
+   282→  }, [open, token]);
+   283→
+   284→  const online = allUsers.filter((u) => u.status === 'online');
+   285→  const away = allUsers.filter((u) => u.status === 'away' || u.status === 'do_not_disturb');
+   286→  const offline = allUsers.filter((u) => u.status === 'offline');
+   287→
+   288→  const startDM = async (userId: string) => {
+   289→    if (!token) return;
+   290→    try {
+   291→      const res = await fetch('/api/dm', {
+   292→        method: 'POST',
+   293→        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+   294→        body: JSON.stringify({ recipientId: userId }),
+   295→      });
+   296→      const data = await res.json();
+   297→      if (data.conversation) {
+   298→        useChatStore.getState().addConversation(data.conversation);
+   299→        useChatStore.getState().setActiveConversation(data.conversation.id);
+   300→        onClose();
+   301→      }
+   302→    } catch (err) {
+   303→      console.error('Start DM error:', err);
+   304→    }
+   305→  };
+   306→
+   307→  const openProfile = (user: typeof allUsers[0]) => {
+   308→    setProfileUser(user);
+   309→    setProfileOpen(true);
+   310→  };
+   311→
+   312→  if (!open) return null;
+   313→
+   314→  return (
+   315→    <>
+   316→      <div className="w-72 border-r flex flex-col h-full bg-card animate-slide-in-right" dir="rtl">
+   317→        {/* Header */}
+   318→        <div className="h-14 border-b flex items-center justify-between px-4 bg-[var(--tarsul-header-bg)]">
+   319→          <h3 className="font-semibold text-sm text-foreground flex items-center gap-2">
+   320→            <Users className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+   321→            أعضاء فريق العمل
+   322→          </h3>
+   323→          <Button variant="ghost" size="icon" onClick={onClose} className="h-8 w-8 text-muted-foreground">
+   324→            <X className="w-4 h-4" />
+   325→          </Button>
+   326→        </div>
+   327→
+   328→        <ScrollArea className="flex-1">
+   329→          {/* Online */}
+   330→          {online.length > 0 && (
+   331→            <div className="p-3">
+   332→              <p className="text-[10px] uppercase font-semibold text-emerald-600 dark:text-emerald-400 tracking-wider px-2 mb-2">
+   333→                متصل — {online.length}
+   334→              </p>
+   335→              {online.map((u) => (
+   336→                <button
+   337→                  key={u.id}
+   338→                  onClick={() => openProfile(u)}
+   339→                  className="w-full flex items-center gap-3 px-2 py-2 rounded-lg hover:bg-[var(--tarsul-hover)] transition-colors text-right group"
+   340→                >
+   341→                  <div className="relative flex-shrink-0">
+   342→                    <UserAvatar name={u.name} size="sm" />
+   343→                    <span className="absolute -bottom-0.5 -left-0.5"><StatusDot status="online" /></span>
+   344→                  </div>
+   345→                  <div className="flex-1 min-w-0">
+   346→                    <p className="text-sm font-medium text-foreground truncate">{u.name}</p>
+   347→                    <p className="text-[11px] text-muted-foreground truncate">{u.department || u.role}</p>
+   348→                  </div>
+   349→                  <MessageCircle
+   350→                    className="w-4 h-4 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer"
+   351→                    onClick={(e) => { e.stopPropagation(); startDM(u.id); }}
+   352→                  />
+   353→                </button>
+   354→              ))}
+   355→            </div>
+   356→          )}
+   357→
+   358→          {/* Away */}
+   359→          {away.length > 0 && (
+   360→            <div className="p-3 pt-0">
+   361→              <p className="text-[10px] uppercase font-semibold text-amber-600 dark:text-amber-400 tracking-wider px-2 mb-2">
+   362→                بعيد — {away.length}
+   363→              </p>
+   364→              {away.map((u) => (
+   365→                <button
+   366→                  key={u.id}
+   367→                  onClick={() => openProfile(u)}
+   368→                  className="w-full flex items-center gap-3 px-2 py-2 rounded-lg hover:bg-[var(--tarsul-hover)] transition-colors text-right"
+   369→                >
+   370→                  <div className="relative flex-shrink-0">
+   371→                    <UserAvatar name={u.name} size="sm" />
+   372→                    <span className="absolute -bottom-0.5 -left-0.5"><StatusDot status={u.status} /></span>
+   373→                  </div>
+   374→                  <div className="flex-1 min-w-0">
+   375→                    <p className="text-sm font-medium text-foreground truncate">{u.name}</p>
+   376→                    <p className="text-[11px] text-muted-foreground truncate">{u.department || u.role}</p>
+   377→                  </div>
+   378→                </button>
+   379→              ))}
+   380→            </div>
+   381→          )}
+   382→
+   383→          {/* Offline */}
+   384→          {offline.length > 0 && (
+   385→            <div className="p-3 pt-0">
+   386→              <p className="text-[10px] uppercase font-semibold text-muted-foreground tracking-wider px-2 mb-2">
+   387→                غير متصل — {offline.length}
+   388→              </p>
+   389→              {offline.map((u) => (
+   390→                <button
+   391→                  key={u.id}
+   392→                  onClick={() => openProfile(u)}
+   393→                  className="w-full flex items-center gap-3 px-2 py-2 rounded-lg hover:bg-[var(--tarsul-hover)] transition-colors text-right opacity-60"
+   394→                >
+   395→                  <div className="relative flex-shrink-0">
+   396→                    <UserAvatar name={u.name} size="sm" />
+   397→                    <span className="absolute -bottom-0.5 -left-0.5"><StatusDot status="offline" /></span>
+   398→                  </div>
+   399→                  <div className="flex-1 min-w-0">
+   400→                    <p className="text-sm font-medium text-foreground truncate">{u.name}</p>
+   401→                    <p className="text-[11px] text-muted-foreground truncate">{u.department || u.role}</p>
+   402→                  </div>
+   403→                </button>
+   404→              ))}
+   405→            </div>
+   406→          )}
+   407→        </ScrollArea>
+   408→      </div>
+   409→      <UserProfileDialog user={profileUser} open={profileOpen} onOpenChange={setProfileOpen} />
+   410→    </>
+   411→  );
+   412→}
+   413→
+   414→// ========================
+   415→// Channel Sidebar
+   416→// ========================
+   417→function ChannelSidebar() {
+   418→  const { channels, conversations, usersList, activeChannelId, activeConversationId, activeView,
+   419→    setActiveChannel, setActiveConversation, setActiveView, sidebarOpen, toggleSidebar,
+   420→    createChannelOpen, setCreateChannelOpen, newDMOpen, setNewDMOpen, setUsersList,
+   421→    messages } = useChatStore();
+   422→  const { user, token } = useAuthStore();
+   423→  const { theme, setTheme } = useTheme();
+   424→  const [search, setSearch] = useState('');
+   425→  const [newChannelName, setNewChannelName] = useState('');
+   426→  const [newChannelDesc, setNewChannelDesc] = useState('');
+   427→  const [dmSearch, setDmSearch] = useState('');
+   428→  const [showDMs, setShowDMs] = useState(true);
+   429→  const [showTeam, setShowTeam] = useState(false);
+   430→  const [teamMembers, setTeamMembers] = useState<Array<{ id: string; name: string; status: string; department: string | null }>>([]);
+   431→  const [profileUser, setProfileUser] = useState<ProfileUserData | null>(null);
+   432→  const [profileOpen, setProfileOpen] = useState(false);
+   433→  const [onlineCount, setOnlineCount] = useState(0);
+   434→
+   435→  // Online user count from socket
+   436→  const { socket } = useSocket();
+   437→  useEffect(() => {
+   438→    if (!socket.current) return;
+   439→    const handler = (data: { count: number }) => setOnlineCount(data.count || 0);
+   440→    socket.current.on('online-users', handler);
+   441→    return () => { socket.current?.off('online-users', handler); };
+   442→  }, [socket]);
+   443→
+   444→  // Load channels
+   445→  useEffect(() => {
+   446→    if (!token) return;
+   447→    fetch('/api/channels', { headers: { Authorization: `Bearer ${token}` } })
+   448→      .then((r) => r.json())
+   449→      .then((d) => d.channels && useChatStore.getState().setChannels(d.channels))
+   450→      .catch(console.error);
+   451→
+   452→    fetch('/api/dm', { headers: { Authorization: `Bearer ${token}` } })
+   453→      .then((r) => r.json())
+   454→      .then((d) => d.conversations && useChatStore.getState().setConversations(d.conversations))
+   455→      .catch(console.error);
+   456→
+   457→    // Load all team members
+   458→    fetch('/api/users?excludeSelf=false', { headers: { Authorization: `Bearer ${token}` } })
+   459→      .then((r) => r.json())
+   460→      .then((d) => { if (d.users) setTeamMembers(d.users); })
+   461→      .catch(console.error);
+   462→  }, [token]);
+   463→
+   464→  const createChannel = async () => {
+   465→    if (!newChannelName.trim() || !token) return;
+   466→    const res = await fetch('/api/channels', {
+   467→      method: 'POST',
+   468→      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+   469→      body: JSON.stringify({ name: newChannelName, description: newChannelDesc || undefined }),
+   470→    });
+   471→    const data = await res.json();
+   472→    if (data.channel) {
+   473→      useChatStore.getState().addChannel(data.channel);
+   474→      setNewChannelName('');
+   475→      setNewChannelDesc('');
+   476→      setCreateChannelOpen(false);
+   477→    }
+   478→  };
+   479→
+   480→  const startDM = async (recipientId: string) => {
+   481→    if (!token) return;
+   482→    const res = await fetch('/api/dm', {
+   483→      method: 'POST',
+   484→      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+   485→      body: JSON.stringify({ recipientId }),
+   486→    });
+   487→    const data = await res.json();
+   488→    if (data.conversation) {
+   489→      useChatStore.getState().addConversation(data.conversation);
+   490→      setActiveConversation(data.conversation.id);
+   491→      setNewDMOpen(false);
+   492→    }
+   493→  };
+   494→
+   495→  const searchUsers = async (q: string) => {
+   496→    setDmSearch(q);
+   497→    if (q.length < 1 || !token) return;
+   498→    const res = await fetch(`/api/users?search=${encodeURIComponent(q)}`, {
+   499→      headers: { Authorization: `Bearer ${token}` },
+   500→    });
+   501→    const data = await res.json();
+   502→    if (data.users) setUsersList(data.users);
+   503→  };
+   504→
+   505→  const filteredChannels = channels.filter((c) =>
+   506→    c.name.includes(search) || (c.description && c.description.includes(search))
+   507→  );
+   508→
+   509→  const departmentChannels = filteredChannels.filter((c) => c.type === 'department');
+   510→  const regularChannels = filteredChannels.filter((c) => c.type === 'channel');
+   511→  const onlineTeam = teamMembers.filter((u) => u.status === 'online');
+   512→
+   513→  // Collapsed sidebar
+   514→  if (!sidebarOpen) {
+   515→    return (
+   516→      <div className="w-16 bg-sidebar border-l flex flex-col items-center py-4 gap-3 transition-all duration-300">
+   517→        <Button variant="ghost" size="icon" onClick={toggleSidebar} className="text-muted-foreground hover:text-foreground">
+   518→          <Menu className="w-5 h-5" />
+   519→        </Button>
+   520→        <Separator className="w-8" />
+   521→        {channels.slice(0, 8).map((ch) => (
+   522→          <TooltipProvider key={ch.id}>
+   523→            <Tooltip>
+   524→              <TooltipTrigger asChild>
+   525→                <Button
+   526→                  variant="ghost"
+   527→                  size="icon"
+   528→                  className={activeChannelId === ch.id ? 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400' : 'text-muted-foreground'}
+   529→                  onClick={() => setActiveChannel(ch.id)}
+   530→                >
+   531→                  <span className="text-lg">{ch.icon || '#'}</span>
+   532→                </Button>
+   533→              </TooltipTrigger>
+   534→              <TooltipContent side="left">{ch.name}</TooltipContent>
+   535→            </Tooltip>
+   536→          </TooltipProvider>
+   537→        ))}
+   538→      </div>
+   539→    );
+   540→  }
+   541→
+   542→  return (
+   543→    <div className="w-72 bg-sidebar border-l flex flex-col h-full transition-all duration-300" dir="rtl">
+   544→      {/* Header with logo + workspace + online count */}
+   545→      <div className="p-3 border-b border-border">
+   546→        <div className="flex items-center justify-between mb-3">
+   547→          <div className="flex items-center gap-2.5">
+   548→            <div className="w-9 h-9 bg-gradient-to-br from-emerald-500 to-teal-600 rounded-xl flex items-center justify-center shadow-sm">
+   549→              <MessageCircle className="w-5 h-5 text-white" />
+   550→            </div>
+   551→            <div>
+   552→              <span className="font-bold text-foreground text-base block leading-tight">تراسل</span>
+   553→              <span className="text-[10px] text-muted-foreground">مساحة العمل المؤسسية</span>
+   554→            </div>
+   555→          </div>
+   556→          <Button variant="ghost" size="icon" onClick={toggleSidebar} className="text-muted-foreground hover:text-foreground h-8 w-8 lg:hidden">
+   557→            <X className="w-4 h-4" />
+   558→          </Button>
+   559→        </div>
+   560→        {/* Online count badge */}
+   561→        <div className="flex items-center gap-1.5 mb-3 px-1">
+   562→          <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+   563→          <span className="text-[11px] text-emerald-600 dark:text-emerald-400 font-medium">
+   564→            {onlineCount > 0 ? onlineCount : onlineTeam.length} متصل الآن
+   565→          </span>
+   566→        </div>
+   567→        {/* Search */}
+   568→        <div className="relative">
+   569→          <Search className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+   570→          <Input
+   571→            placeholder="بحث في القنوات..."
+   572→            value={search}
+   573→            onChange={(e) => setSearch(e.target.value)}
+   574→            className="h-9 pr-9 text-sm bg-card border-border"
+   575→          />
+   576→        </div>
+   577→      </div>
+   578→
+   579→      <ScrollArea className="flex-1">
+   580→        {/* New Conversation Buttons */}
+   581→        <div className="p-3 flex gap-2">
+   582→          <Dialog open={createChannelOpen} onOpenChange={setCreateChannelOpen}>
+   583→            <DialogTrigger asChild>
+   584→              <Button variant="outline" size="sm" className="flex-1 text-xs h-8 border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-900/20">
+   585→                <Plus className="w-3.5 h-3.5 ml-1" />
+   586→                قناة جديدة
+   587→              </Button>
+   588→            </DialogTrigger>
+   589→            <DialogContent dir="rtl">
+   590→              <DialogHeader>
+   591→                <DialogTitle>إنشاء قناة جديدة</DialogTitle>
+   592→              </DialogHeader>
+   593→              <div className="space-y-3">
+   594→                <div>
+   595→                  <Label>اسم القناة</Label>
+   596→                  <Input value={newChannelName} onChange={(e) => setNewChannelName(e.target.value)} placeholder="مثال: قسم التدقيق" className="mt-1" />
+   597→                </div>
+   598→                <div>
+   599→                  <Label>الوصف (اختياري)</Label>
+   600→                  <Input value={newChannelDesc} onChange={(e) => setNewChannelDesc(e.target.value)} placeholder="وصف مختصر للقناة" className="mt-1" />
+   601→                </div>
+   602→              </div>
+   603→              <DialogFooter>
+   604→                <Button onClick={createChannel} className="bg-emerald-600 hover:bg-emerald-700">إنشاء</Button>
+   605→              </DialogFooter>
+   606→            </DialogContent>
+   607→          </Dialog>
+   608→
+   609→          <Dialog open={newDMOpen} onOpenChange={setNewDMOpen}>
+   610→            <DialogTrigger asChild>
+   611→              <Button variant="outline" size="sm" className="flex-1 text-xs h-8 border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-900/20">
+   612→                <MessageCircle className="w-3.5 h-3.5 ml-1" />
+   613→                محادثة جديدة
+   614→              </Button>
+   615→            </DialogTrigger>
+   616→            <DialogContent dir="rtl">
+   617→              <DialogHeader>
+   618→                <DialogTitle>محادثة مباشرة جديدة</DialogTitle>
+   619→              </DialogHeader>
+   620→              <Input
+   621→                placeholder="ابحث عن مستخدم..."
+   622→                value={dmSearch}
+   623→                onChange={(e) => searchUsers(e.target.value)}
+   624→                className="mb-3"
+   625→              />
+   626→              <ScrollArea className="max-h-64">
+   627→                <div className="space-y-1">
+   628→                  {usersList.map((u) => (
+   629→                    <button
+   630→                      key={u.id}
+   631→                      onClick={() => startDM(u.id)}
+   632→                      className="w-full flex items-center gap-3 p-2 rounded-lg hover:bg-[var(--tarsul-hover)] text-right transition-colors"
+   633→                    >
+   634→                      <UserAvatar name={u.name} />
+   635→                      <div className="flex-1 min-w-0">
+   636→                        <p className="text-sm font-medium text-foreground truncate">{u.name}</p>
+   637→                        <p className="text-xs text-muted-foreground truncate">{u.department || u.id}</p>
+   638→                      </div>
+   639→                      <StatusDot status={u.status} />
+   640→                    </button>
+   641→                  ))}
+   642→                </div>
+   643→              </ScrollArea>
+   644→            </DialogContent>
+   645→          </Dialog>
+   646→        </div>
+   647→
+   648→        {/* Department Channels */}
+   649→        {departmentChannels.length > 0 && (
+   650→          <div className="px-3 mb-1">
+   651→            <p className="text-[10px] uppercase font-semibold text-muted-foreground tracking-wider px-2 mb-1.5 flex items-center gap-1.5">
+   652→              <Building2 className="w-3 h-3" />
+   653→              الأقسام والإدارات
+   654→            </p>
+   655→            {departmentChannels.map((ch) => (
+   656→              <button
+   657→                key={ch.id}
+   658→                onClick={() => setActiveChannel(ch.id)}
+   659→                className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-sm transition-all duration-150 group ${
+   660→                  activeChannelId === ch.id
+   661→                    ? 'bg-[var(--tarsul-active-bg)] text-emerald-700 dark:text-emerald-400 font-medium'
+   662→                    : 'text-foreground/80 hover:bg-[var(--tarsul-hover)]'
+   663→                }`}
+   664→              >
+   665→                <span className="text-base flex-shrink-0">{ch.icon || '🏢'}</span>
+   666→                <div className="flex-1 min-w-0 text-right">
+   667→                  <span className="truncate block">{ch.name}</span>
+   668→                  {ch.description && (
+   669→                    <span className="text-[10px] text-muted-foreground truncate block">{ch.description}</span>
+   670→                  )}
+   671→                </div>
+   672→                {ch.memberCount && (
+   673→                  <span className="text-[10px] text-muted-foreground flex-shrink-0">{ch.memberCount}</span>
+   674→                )}
+   675→              </button>
+   676→            ))}
+   677→          </div>
+   678→        )}
+   679→
+   680→        {/* Regular Channels */}
+   681→        {regularChannels.length > 0 && (
+   682→          <div className="px-3 mb-1">
+   683→            <p className="text-[10px] uppercase font-semibold text-muted-foreground tracking-wider px-2 mb-1.5 flex items-center gap-1.5">
+   684→              <Hash className="w-3 h-3" />
+   685→              القنوات
+   686→            </p>
+   687→            {regularChannels.map((ch) => (
+   688→              <button
+   689→                key={ch.id}
+   690→                onClick={() => setActiveChannel(ch.id)}
+   691→                className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-sm transition-all duration-150 group ${
+   692→                  activeChannelId === ch.id
+   693→                    ? 'bg-[var(--tarsul-active-bg)] text-emerald-700 dark:text-emerald-400 font-medium'
+   694→                    : 'text-foreground/80 hover:bg-[var(--tarsul-hover)]'
+   695→                }`}
+   696→              >
+   697→                <Hash className="w-4 h-4 text-muted-foreground flex-shrink-0" />
+   698→                <span className="truncate flex-1 text-right">{ch.name}</span>
+   699→              </button>
+   700→            ))}
+   701→          </div>
+   702→        )}
+   703→
+   704→        <Separator className="mx-3 my-2" />
+   705→
+   706→        {/* Direct Messages */}
+   707→        <div className="px-3">
+   708→          <button
+   709→            onClick={() => setShowDMs(!showDMs)}
+   710→            className="w-full flex items-center justify-between px-2 mb-1.5"
+   711→          >
+   712→            <p className="text-[10px] uppercase font-semibold text-muted-foreground tracking-wider flex items-center gap-1.5">
+   713→              <MessageCircle className="w-3 h-3" />
+   714→              الرسائل المباشرة
+   715→            </p>
+   716→            <ChevronLeft className={`w-3 h-3 text-muted-foreground transition-transform duration-200 ${showDMs ? 'rotate-90' : ''}`} />
+   717→          </button>
+   718→          {showDMs && conversations.map((conv) => (
+   719→            <button
+   720→              key={conv.id}
+   721→              onClick={() => setActiveConversation(conv.id)}
+   722→              className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-sm transition-all duration-150 group ${
+   723→                activeConversationId === conv.id
+   724→                  ? 'bg-[var(--tarsul-active-bg)] text-emerald-700 dark:text-emerald-400 font-medium'
+   725→                  : 'text-foreground/80 hover:bg-[var(--tarsul-hover)]'
+   726→              }`}
+   727→            >
+   728→              <div className="relative flex-shrink-0">
+   729→                <UserAvatar name={conv.otherUser.name} />
+   730→                <span className="absolute -bottom-0.5 -left-0.5"><StatusDot status={conv.otherUser.status} /></span>
+   731→              </div>
+   732→              <span className="truncate flex-1 text-right">{conv.otherUser.name}</span>
+   733→            </button>
+   734→          ))}
+   735→        </div>
+   736→
+   737→        <Separator className="mx-3 my-2" />
+   738→
+   739→        {/* Team Members section */}
+   740→        <div className="px-3 pb-3">
+   741→          <button
+   742→            onClick={() => setShowTeam(!showTeam)}
+   743→            className="w-full flex items-center justify-between px-2 mb-1.5"
+   744→          >
+   745→            <p className="text-[10px] uppercase font-semibold text-muted-foreground tracking-wider flex items-center gap-1.5">
+   746→              <Users className="w-3 h-3" />
+   747→              أعضاء الفريق — {teamMembers.length}
+   748→            </p>
+   749→            <ChevronLeft className={`w-3 h-3 text-muted-foreground transition-transform duration-200 ${showTeam ? 'rotate-90' : ''}`} />
+   750→          </button>
+   751→          {showTeam && (
+   752→            <div className="space-y-0.5">
+   753→              {teamMembers.map((u) => (
+   754→                <button
+   755→                  key={u.id}
+   756→                  onClick={() => { setProfileUser(u); setProfileOpen(true); }}
+   757→                  className="w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg text-sm transition-all duration-150 hover:bg-[var(--tarsul-hover)] text-right"
+   758→                >
+   759→                  <div className="relative flex-shrink-0">
+   760→                    <UserAvatar name={u.name} />
+   761→                    <span className="absolute -bottom-0.5 -left-0.5"><StatusDot status={u.status} /></span>
+   762→                  </div>
+   763→                  <div className="flex-1 min-w-0">
+   764→                    <span className="truncate block text-foreground/80 text-xs">{u.name}</span>
+   765→                    {u.department && (
+   766→                      <span className="text-[10px] text-muted-foreground truncate block">{u.department}</span>
+   767→                    )}
+   768→                  </div>
+   769→                </button>
+   770→              ))}
+   771→            </div>
+   772→          )}
+   773→        </div>
+   774→      </ScrollArea>
+   775→
+   776→      {/* User Footer */}
+   777→      {user && (
+   778→        <div className="p-3 border-t bg-card">
+   779→          <div className="flex items-center gap-3">
+   780→            <button
+   781→              onClick={() => { setProfileUser({ ...user, email: user.email }); setProfileOpen(true); }}
+   782→              className="relative focus:outline-none"
+   783→            >
+   784→              <UserAvatar name={user.name} size="md" />
+   785→              <span className="absolute -bottom-0.5 -left-0.5"><StatusDot status="online" /></span>
+   786→            </button>
+   787→            <div className="flex-1 min-w-0">
+   788→              <p className="text-sm font-medium text-foreground truncate">{user.name}</p>
+   789→              <p className="text-[11px] text-muted-foreground truncate" dir="ltr">{user.email}</p>
+   790→            </div>
+   791→            <div className="flex items-center gap-0.5">
+   792→              {/* Theme toggle */}
+   793→              <Button
+   794→                variant="ghost"
+   795→                size="icon"
+   796→                className="text-muted-foreground hover:text-foreground h-8 w-8"
+   797→                onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+   798→              >
+   799→                {theme === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+   800→              </Button>
+   801→              <DropdownMenu dir="rtl">
+   802→                <DropdownMenuTrigger asChild>
+   803→                  <Button variant="ghost" size="icon" className="text-muted-foreground hover:text-foreground h-8 w-8">
+   804→                    <Settings className="w-4 h-4" />
+   805→                  </Button>
+   806→                </DropdownMenuTrigger>
+   807→                <DropdownMenuContent align="start" className="w-48">
+   808→                  <DropdownMenuItem className="opacity-60 cursor-default">
+   809→                    <EncryptionBadge />
+   810→                  </DropdownMenuItem>
+   811→                  <DropdownMenuSeparator />
+   812→                  <DropdownMenuItem onClick={() => useAuthStore.getState().logout()} className="text-red-600 dark:text-red-400">
+   813→                    <LogOut className="w-4 h-4 ml-2" />
+   814→                    تسجيل الخروج
+   815→                  </DropdownMenuItem>
+   816→                </DropdownMenuContent>
+   817→              </DropdownMenu>
+   818→            </div>
+   819→          </div>
+   820→        </div>
+   821→      )}
+   822→
+   823→      <UserProfileDialog user={profileUser} open={profileOpen} onOpenChange={setProfileOpen} />
+   824→    </div>
+   825→  );
+   826→}
+   827→
+   828→function formatFileSize(bytes: number): string {
+   829→  if (bytes < 1024) return `${bytes} B`;
+   830→  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+   831→  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+   832→}
+   833→
+   834→function FileAttachment({ metadata }: { metadata: string | null; content: string }) {
+   835→  const [downloading, setDownloading] = useState(false);
+   836→
+   837→  const handleDownload = async (url: string, filename: string) => {
+   838→    if (downloading) return;
+   839→    setDownloading(true);
+   840→    try {
+   841→      const filePath = url.startsWith('/') ? url : `/${url}`;
+   842→      const downloadUrl = `/api/download?file=${encodeURIComponent(filePath)}&name=${encodeURIComponent(filename)}`;
+   843→
+   844→      const response = await fetch(downloadUrl);
+   845→      if (!response.ok) {
+   846→        throw new Error(`HTTP ${response.status}`);
+   847→      }
+   848→
+   849→      const blob = await response.blob();
+   850→      const blobUrl = window.URL.createObjectURL(blob);
+   851→      const a = document.createElement('a');
+   852→      a.href = blobUrl;
+   853→      a.download = filename;
+   854→      document.body.appendChild(a);
+   855→      a.click();
+   856→      document.body.removeChild(a);
+   857→      setTimeout(() => window.URL.revokeObjectURL(blobUrl), 1000);
+   858→
+   859→      toast.success(`تم تنزيل "${filename}" بنجاح`);
+   860→    } catch (error) {
+   861→      console.error('Download error:', error);
+   862→      toast.error('فشل تنزيل الملف، يرجى المحاولة مرة أخرى');
+   863→    } finally {
+   864→      setDownloading(false);
+   865→    }
+   866→  };
+   867→
+   868→  if (!metadata) return null;
+   869→  let fileData: { fileType?: string; file?: { url: string; filename: string; originalName?: string; mimetype: string; size: number; category: string } } | null = null;
+   870→  try {
+   871→    fileData = JSON.parse(metadata);
+   872→  } catch {
+   873→    return null;
+   874→  }
+   875→  if (!fileData?.fileType || fileData.fileType !== 'attachment' || !fileData.file) return null;
+   876→  const { url, filename, originalName, size, category } = fileData.file;
+   877→  const displayName = originalName || filename;
+   878→
+   879→  if (category === 'image') {
+   880→    return (
+   881→      <div className="mb-2 rounded-xl overflow-hidden border border-border max-w-[300px] shadow-sm" dir="rtl">
+   882→        <a href={url} target="_blank" rel="noopener noreferrer" className="block">
+   883→          <img
+   884→            src={url}
+   885→            alt={displayName}
+   886→            className="w-full max-h-56 object-contain bg-muted/30"
+   887→            loading="lazy"
+   888→          />
+   889→        </a>
+   890→        <div className="flex items-center justify-between px-3 py-2.5 bg-muted/50">
+   891→          <div className="flex items-center gap-2 min-w-0 flex-1">
+   892→            <div className="w-7 h-7 rounded-md bg-sky-100 dark:bg-sky-900/40 flex items-center justify-center flex-shrink-0">
+   893→              <ImageIcon className="w-3.5 h-3.5 text-sky-600 dark:text-sky-400" />
+   894→            </div>
+   895→            <div className="min-w-0 flex-1">
+   896→              <p className="text-xs font-medium text-foreground truncate" title={displayName}>{displayName}</p>
+   897→              <p className="text-[10px] text-muted-foreground">{formatFileSize(size)}</p>
+   898→            </div>
+   899→          </div>
+   900→          <button
+   901→            onClick={() => handleDownload(url, displayName)}
+   902→            disabled={downloading}
+   903→            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-white bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 disabled:opacity-60 disabled:cursor-not-allowed transition-all shadow-sm hover:shadow-md flex-shrink-0 mr-2"
+   904→          >
+   905→            {downloading ? (
+   906→              <>
+   907→                <DownloadLoader className="w-3.5 h-3.5 animate-spin" />
+   908→                <span>جارٍ التنزيل...</span>
+   909→              </>
+   910→            ) : (
+   911→              <>
+   912→                <Download className="w-3.5 h-3.5" />
+   913→                <span>تنزيل</span>
+   914→              </>
+   915→            )}
+   916→          </button>
+   917→        </div>
+   918→      </div>
+   919→    );
+   920→  }
+   921→
+   922→  const isPdf = category === 'pdf';
+   923→  return (
+   924→    <div
+   925→      className={`flex items-center gap-3 p-3.5 rounded-xl border mb-2 max-w-[320px] shadow-sm ${
+   926→        isPdf
+   927→          ? 'border-red-200/80 bg-gradient-to-l from-red-50/80 to-white dark:from-red-950/30 dark:to-card dark:border-red-800/50'
+   928→          : 'border-blue-200/80 bg-gradient-to-l from-blue-50/80 to-white dark:from-blue-950/30 dark:to-card dark:border-blue-800/50'
+   929→      }`}
+   930→      dir="rtl"
+   931→    >
+   932→      <div
+   933→        className={`flex-shrink-0 w-12 h-12 rounded-xl flex items-center justify-center cursor-pointer hover:scale-105 active:scale-95 transition-transform shadow-sm ${
+   934→          isPdf
+   935→            ? 'bg-gradient-to-br from-red-100 to-red-200 dark:from-red-900/50 dark:to-red-800/40'
+   936→            : 'bg-gradient-to-br from-blue-100 to-blue-200 dark:from-blue-900/50 dark:to-blue-800/40'
+   937→        }`}
+   938→        onClick={() => window.open(url, '_blank')}
+   939→        title="معاينة"
+   940→      >
+   941→        {isPdf ? (
+   942→          <FileText className="w-6 h-6 text-red-600 dark:text-red-400" />
+   943→        ) : (
+   944→          <FileText className="w-6 h-6 text-blue-600 dark:text-blue-400" />
+   945→        )}
+   946→      </div>
+   947→      <div className="flex-1 min-w-0">
+   948→        <p className="text-sm font-semibold truncate" title={displayName}>{displayName}</p>
+   949→        <p className="text-[11px] text-muted-foreground mt-0.5">{formatFileSize(size)}</p>
+   950→      </div>
+   951→      <button
+   952→        onClick={() => handleDownload(url, displayName)}
+   953→        disabled={downloading}
+   954→        className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 disabled:opacity-60 disabled:cursor-not-allowed transition-all shadow-sm hover:shadow-md flex-shrink-0"
+   955→        title={`تنزيل ${displayName}`}
+   956→      >
+   957→        {downloading ? (
+   958→          <>
+   959→            <DownloadLoader className="w-3.5 h-3.5 animate-spin" />
+   960→            <span>جارٍ التنزيل...</span>
+   961→          </>
+   962→        ) : (
+   963→          <>
+   964→            <Download className="w-4 h-4" />
+   965→            <span>تنزيل</span>
+   966→          </>
+   967→        )}
+   968→      </button>
+   969→    </div>
+   970→  );
+   971→}
+   972→
+   973→// ========================
+   974→// Message Bubble
+   975→// ========================
+   976→function MessageBubble({
+   977→  msg, isOwn, onReply, onDelete, onPin, onProfileClick, displayContent, readStatus,
+   978→}: {
+   979→  msg: Message;
+   980→  isOwn: boolean;
+   981→  onReply: (msg: Message) => void;
+   982→  onDelete: (msg: Message) => void;
+   983→  onPin: (msg: Message) => void;
+   984→  onProfileClick: (user: Message['sender']) => void;
+   985→  /** Decrypted or plaintext content to display */
+   986→  displayContent: string;
+   987→  /** Read receipt status: 'sent' | 'delivered' | 'read' | null */
+   988→  readStatus: string | null;
+   989→}) {
+   990→  // System message
+   991→  if (msg.type === 'system') {
+   992→    return (
+   993→      <div className="flex justify-center my-3">
+   994→        <div className="px-4 py-1.5 bg-muted rounded-full text-xs text-muted-foreground">
+   995→          {msg.content}
+   996→        </div>
+   997→      </div>
+   998→    );
+   999→  }
+  1000→
+  1001→  // Decryption failed indicator
+  1002→  const isEncrypted = msg.type === 'encrypted' && msg.iv;
+  1003→  const isDecryptError = isEncrypted && displayContent === msg.content && displayContent.length > 100;
+  1004→
+  1005→  return (
+  1006→    <div className={`flex gap-3 group ${isOwn ? 'flex-row-reverse' : ''} mb-1 px-4 hover:bg-emerald-50/50 dark:hover:bg-emerald-900/10 transition-colors duration-150`}>
+  1007→      {/* Avatar — clickable for profile */}
+  1008→      <button
+  1009→        onClick={() => onProfileClick(msg.sender)}
+  1010→        className="flex-shrink-0 mt-1 focus:outline-none"
+  1011→      >
+  1012→        <UserAvatar name={msg.sender.name} />
+  1013→      </button>
+  1014→      <div className={`flex-1 max-w-[75%] ${isOwn ? 'text-left' : 'text-right'}`}>
+  1015→        {/* Sender info */}
+  1016→        <div className={`flex items-center gap-2 mb-1 ${isOwn ? 'justify-end' : ''}`}>
+  1017→          <span className="text-sm font-semibold text-foreground">{msg.sender.name}</span>
+  1018→          {msg.sender.department && (
+  1019→            <span className="text-[10px] text-muted-foreground">{msg.sender.department}</span>
+  1020→          )}
+  1021→          <span className="text-[10px] text-muted-foreground">{formatTime(msg.createdAt)}</span>
+  1022→          {msg.isPinned && (
+  1023→            <Pin className="w-3 h-3 text-amber-500" />
+  1024→          )}
+  1025→          {msg.isEdited && (
+  1026→            <span className="text-[10px] text-muted-foreground flex items-center gap-0.5">
+  1027→              <Edit3 className="w-2.5 h-2.5" /> مُعدّل
+  1028→            </span>
+  1029→          )}
+  1030→        </div>
+  1031→
+  1032→        {/* Reply reference */}
+  1033→        {msg.replyTo && (
+  1034→          <div className={`text-xs p-2 bg-muted rounded-lg border-r-2 border-emerald-400 dark:border-emerald-600 mb-1 ${isOwn ? 'text-left' : ''}`}>
+  1035→            <span className="font-medium text-emerald-700 dark:text-emerald-400">{msg.replyTo.sender.name}</span>
+  1036→            <p className="text-muted-foreground truncate">{msg.replyTo.content}</p>
+  1037→          </div>
+  1038→        )}
+  1039→
+  1040→        {/* Message content */}
+  1041→        <div className={`relative inline-block rounded-2xl px-4 py-2.5 shadow-sm transition-shadow hover:shadow-md ${
+  1042→          isOwn
+  1043→            ? 'bg-gradient-to-br from-emerald-500 to-teal-600 text-white rounded-tr-md'
+  1044→            : 'bg-card border border-border text-foreground rounded-tl-md'
+  1045→        }`}>
+  1046→          {isDecryptError ? (
+  1047→            <div className="flex items-center gap-2 text-xs opacity-70">
+  1048→              <Shield className="w-3.5 h-3.5" />
+  1049→              <span>فشل فك التشفير — المفاتيح غير متاحة</span>
+  1050→            </div>
+  1051→          ) : (
+  1052→            <>
+  1053→              <FileAttachment metadata={msg.metadata} content={displayContent} />
+  1054→              <p className="text-sm leading-relaxed whitespace-pre-wrap break-words">{displayContent}</p>
+  1055→            </>
+  1056→          )}
+  1057→
+  1058→          {/* E2EE lock icon — only on encrypted messages */}
+  1059→          {isEncrypted && !isDecryptError && (
+  1060→            <div className={`absolute ${isOwn ? 'left-2' : 'right-2'} top-1.5 opacity-40`}>
+  1061→              <Lock className="w-3 h-3" />
+  1062→            </div>
+  1063→          )}
+  1064→
+  1065→          {/* Message actions — visible on hover */}
+  1066→          <div className={`absolute ${isOwn ? 'left-2' : 'right-2'} -bottom-3 flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity`}>
+  1067→            <Button variant="ghost" size="icon" className="h-6 w-6 text-muted-foreground hover:text-foreground bg-card dark:bg-gray-800 shadow-sm border border-border rounded" onClick={() => onReply(msg)}>
+  1068→              <Reply className="w-3 h-3" />
+  1069→            </Button>
+  1070→            <Button variant="ghost" size="icon" className="h-6 w-6 text-muted-foreground hover:text-foreground bg-card dark:bg-gray-800 shadow-sm border border-border rounded" onClick={() => onPin(msg)}>
+  1071→              <Pin className="w-3 h-3" />
+  1072→            </Button>
+  1073→            <Button variant="ghost" size="icon" className="h-6 w-6 text-muted-foreground hover:text-foreground bg-card dark:bg-gray-800 shadow-sm border border-border rounded" onClick={() => { navigator.clipboard.writeText(displayContent); toast.success('تم نسخ الرسالة'); }}>
+  1074→              <Copy className="w-3 h-3" />
+  1075→            </Button>
+  1076→            {isOwn && (
+  1077→              <Button variant="ghost" size="icon" className="h-6 w-6 text-red-500 hover:text-red-600 bg-card dark:bg-gray-800 shadow-sm border border-border rounded" onClick={() => onDelete(msg)}>
+  1078→                <Trash2 className="w-3 h-3" />
+  1079→              </Button>
+  1080→            )}
+  1081→          </div>
+  1082→        </div>
+  1083→
+  1084→        {/* Delivery / Read indicator */}
+  1085→        {isOwn && (
+  1086→          <div className={`flex items-center gap-0.5 mt-1 ${isOwn ? 'justify-end' : ''}`}>
+  1087→            {readStatus === 'read' ? (
+  1088→              <CheckCheck className="w-3.5 h-3.5 text-blue-500" />
+  1089→            ) : readStatus === 'delivered' ? (
+  1090→              <CheckCheck className="w-3.5 h-3.5 text-emerald-500" />
+  1091→            ) : (
+  1092→              <Check className="w-3.5 h-3.5 text-muted-foreground" />
+  1093→            )}
+  1094→            <span className="text-[9px] text-muted-foreground">
+  1095→              {readStatus === 'read' ? 'تمت القراءة' : readStatus === 'delivered' ? 'تم الاستلام' : 'تم الإرسال'}
+  1096→            </span>
+  1097→          </div>
+  1098→        )}
+  1099→      </div>
+  1100→    </div>
+  1101→  );
+  1102→}
+  1103→
+  1104→// ========================
+  1105→// Typing Indicator
+  1106→// ========================
+  1107→function TypingIndicator({ names }: { names: string[] }) {
+  1108→  if (names.length === 0) return null;
+  1109→  const label = names.length === 1 ? names[0] : names.length === 2 ? `${names[0]} و${names[1]}` : `${names[0]} و${names.length - 1} آخرون`;
+  1110→  return (
+  1111→    <div className="px-4 py-1.5 flex items-center gap-2" dir="rtl">
+  1112→      <div className="flex items-center gap-1">
+  1113→        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse-dot" style={{ animationDelay: '0ms' }} />
+  1114→        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse-dot" style={{ animationDelay: '200ms' }} />
+  1115→        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse-dot" style={{ animationDelay: '400ms' }} />
+  1116→      </div>
+  1117→      <span className="text-xs text-muted-foreground italic">{label} يكتب...</span>
+  1118→    </div>
+  1119→  );
+  1120→}
+  1121→
+  1122→// ========================
+  1123→// Pinned Messages Bar
+  1124→// ========================
+  1125→function PinnedMessagesBar({ messages }: { messages: Message[] }) {
+  1126→  const pinned = messages.filter((m) => m.isPinned && !m.isDeleted);
+  1127→  if (pinned.length === 0) return null;
+  1128→  const latest = pinned[pinned.length - 1];
+  1129→  return (
+  1130→    <div className="px-4 py-2 bg-amber-50 dark:bg-amber-900/20 border-b border-amber-200 dark:border-amber-800/50 flex items-center gap-2" dir="rtl">
+  1131→      <Pin className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 flex-shrink-0" />
+  1132→      <div className="flex-1 min-w-0">
+  1133→        <p className="text-[10px] text-amber-600 dark:text-amber-400 font-medium">رسالة مثبتة</p>
+  1134→        <p className="text-xs text-foreground truncate">{latest.content}</p>
+  1135→      </div>
+  1136→      <span className="text-[10px] text-muted-foreground flex-shrink-0">{pinned.length} رسائل مثبتة</span>
+  1137→    </div>
+  1138→  );
+  1139→}
+  1140→
+  1141→// ========================
+  1142→// Chat Area
+  1143→// ========================
+  1144→function ChatArea({ onOpenUsersPanel, onOpenTweets }: { onOpenUsersPanel: () => void; onOpenTweets: () => void }) {
+  1145→  const { messages, activeChannelId, activeConversationId, activeView, channels, conversations,
+  1146→    loadingMessages, sendingMessage, setLoadingMessages, setSendingMessage, addMessage } = useChatStore();
+  1147→  const { user, token } = useAuthStore();
+  1148→  const { sendMessage, sendTyping, stopTyping, socket } = useSocket();
+  1149→  const callHook = useCall();
+  1150→  const [inputText, setInputText] = useState('');
+  1151→  const [replyTo, setReplyTo] = useState<Message | null>(null);
+  1152→  const [showEmoji, setShowEmoji] = useState(false);
+  1153→  const [typingUsers, setTypingUsers] = useState<string[]>([]);
+  1154→  const [profileUser, setProfileUser] = useState<ProfileUserData | null>(null);
+  1155→  const [profileOpen, setProfileOpen] = useState(false);
+  1156→  const [cryptoReady, setCryptoReady] = useState(false);
+  1157→  // Call user selector
+  1158→  const [callUserPickerOpen, setCallUserPickerOpen] = useState(false);
+  1159→  // File upload
+  1160→  const [fileUploadOpen, setFileUploadOpen] = useState(false);
+  1161→  const [pendingCallType, setPendingCallType] = useState<'audio' | 'video' | null>(null);
+  1162→  const [callUsers, setCallUsers] = useState<Array<{ id: string; name: string; avatar?: string | null; status: string }>>([]);
+  1163→  const [callUserSearch, setCallUserSearch] = useState('');
+  1164→  // Map: messageId -> decrypted plaintext
+  1165→  const [decryptedMap, setDecryptedMap] = useState<Record<string, string>>({});
+  1166→  // Map: messageId -> read status ('sent' | 'delivered' | 'read')
+  1167→  const [readStatusMap, setReadStatusMap] = useState<Record<string, string>>({});
+  1168→  // Track recently sent messages (plaintext) to avoid re-encryption display
+  1169→  const sentPlaintextRef = useRef<Record<string, string>>({});
+  1170→  const messagesEndRef = useRef<HTMLDivElement>(null);
+  1171→  const inputRef = useRef<HTMLInputElement>(null);
+  1172→  const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  1173→
+  1174→  const activeChannel = channels.find((c) => c.id === activeChannelId);
+  1175→  const activeConversation = conversations.find((c) => c.id === activeConversationId);
+  1176→
+  1177→  // Initialize CryptoManager from localStorage keys (needed after page refresh)
+  1178→  useEffect(() => {
+  1179→    const init = async () => {
+  1180→      try {
+  1181→        const cm = CryptoManager.getInstance();
+  1182→        if (!cm.isInitialized()) {
+  1183→          await cm.initialize();
+  1184→        }
+  1185→        setCryptoReady(true);
+  1186→      } catch (err) {
+  1187→        console.warn('[Tarsul] Crypto init failed:', err);
+  1188→        setCryptoReady(false);
+  1189→      }
+  1190→    };
+  1191→    init();
+  1192→  }, []);
+  1193→
+  1194→  // Decrypt messages when they change or crypto becomes ready
+  1195→  useEffect(() => {
+  1196→    if (!cryptoReady || messages.length === 0) return;
+  1197→    const cm = CryptoManager.getInstance();
+  1198→    if (!cm.isInitialized()) return;
+  1199→
+  1200→    const targetId = activeView === 'channels' ? activeChannelId : activeConversationId;
+  1201→    if (!targetId) return;
+  1202→
+  1203→    let cancelled = false;
+  1204→    const decryptAll = async () => {
+  1205→      const newMap: Record<string, string> = {};
+  1206→      const newStatus: Record<string, string> = {};
+  1207→
+  1208→      for (const msg of messages) {
+  1209→        // System messages and non-encrypted messages: pass through
+  1210→        if (msg.type === 'system' || !msg.iv) {
+  1211→          newMap[msg.id] = msg.content;
+  1212→          // Simulate read status for non-own messages
+  1213→          if (msg.senderId !== user?.id) {
+  1214→            newStatus[msg.id] = 'read';
+  1215→          } else {
+  1216→            newStatus[msg.id] = 'delivered';
+  1217→          }
+  1218→          continue;
+  1219→        }
+  1220→
+  1221→        // Check if we just sent this message (use the stored plaintext)
+  1222→        if (sentPlaintextRef.current[msg.id]) {
+  1223→          newMap[msg.id] = sentPlaintextRef.current[msg.id];
+  1224→          newStatus[msg.id] = 'sent';
+  1225→          continue;
+  1226→        }
+  1227→
+  1228→        // Try to decrypt encrypted messages
+  1229→        try {
+  1230→          let plaintext: string;
+  1231→          if (activeView === 'channels') {
+  1232→            plaintext = await cm.decryptChannelMessage(
+  1233→              { content: msg.content, iv: msg.iv },
+  1234→              msg.channelId || targetId
+  1235→            );
+  1236→          } else {
+  1237→            // For DMs, try channel-style decryption with dmId as key
+  1238→            plaintext = await cm.decryptChannelMessage(
+  1239→              { content: msg.content, iv: msg.iv },
+  1240→              msg.dmId || targetId
+  1241→            );
+  1242→          }
+  1243→          newMap[msg.id] = plaintext;
+  1244→          newStatus[msg.id] = msg.senderId === user?.id ? 'delivered' : 'read';
+  1245→        } catch {
+  1246→          // Decryption failed — keep raw content (will show error in bubble)
+  1247→          newMap[msg.id] = msg.content;
+  1248→          newStatus[msg.id] = 'sent';
+  1249→        }
+  1250→      }
+  1251→
+  1252→      if (!cancelled) {
+  1253→        setDecryptedMap(newMap);
+  1254→        setReadStatusMap(newStatus);
+  1255→      }
+  1256→    };
+  1257→
+  1258→    decryptAll();
+  1259→    return () => { cancelled = true; };
+  1260→  }, [messages, cryptoReady, activeView, activeChannelId, activeConversationId, user?.id]);
+  1261→
+  1262→  // Helper: get display content for a message
+  1263→  const getDisplayContent = useCallback((msg: Message): string => {
+  1264→    if (msg.type === 'system' || !msg.iv) return msg.content;
+  1265→    return decryptedMap[msg.id] || msg.content;
+  1266→  }, [decryptedMap]);
+  1267→
+  1268→  // Helper: get read status for a message
+  1269→  const getReadStatus = useCallback((msg: Message): string | null => {
+  1270→    if (msg.type === 'system') return null;
+  1271→    return readStatusMap[msg.id] || null;
+  1272→  }, [readStatusMap]);
+  1273→
+  1274→  // Listen for typing indicators
+  1275→  useEffect(() => {
+  1276→    if (!socket.current) return;
+  1277→    const onTyping = (data: { userId: string; userName: string }) => {
+  1278→      if (data.userId === user?.id) return;
+  1279→      setTypingUsers((prev) => {
+  1280→        if (prev.includes(data.userName)) return prev;
+  1281→        return [...prev, data.userName];
+  1282→      });
+  1283→      setTimeout(() => {
+  1284→        setTypingUsers((prev) => prev.filter((n) => n !== data.userName));
+  1285→      }, 3000);
+  1286→    };
+  1287→    const onStopTyping = (data: { userId: string; userName: string }) => {
+  1288→      setTypingUsers((prev) => prev.filter((n) => n !== data.userName));
+  1289→    };
+  1290→    socket.current.on('user-typing', onTyping);
+  1291→    socket.current.on('user-stop-typing', onStopTyping);
+  1292→    return () => {
+  1293→      socket.current?.off('user-typing', onTyping);
+  1294→      socket.current?.off('user-stop-typing', onStopTyping);
+  1295→    };
+  1296→  }, [socket, user?.id]);
+  1297→
+  1298→  // Listen for new messages from socket for toast notifications
+  1299→  useEffect(() => {
+  1300→    if (!socket.current) return;
+  1301→    const handler = (message: any) => {
+  1302→      // Decrypt content for toast preview
+  1303→      let previewContent = message.content || '';
+  1304→      if (message.iv && message.content?.length > 100) {
+  1305→        previewContent = '🔐 رسالة مشفرة';
+  1306→      }
+  1307→      // If message is for a different channel/DM, show toast
+  1308→      if (message.channelId && message.channelId !== activeChannelId) {
+  1309→        const ch = channels.find((c) => c.id === message.channelId);
+  1310→        toast.info(`${message.senderName || 'مستخدم'}: ${previewContent.slice(0, 60)}${previewContent.length > 60 ? '...' : ''}`, {
+  1311→          description: ch ? `#${ch.name}` : 'قناة',
+  1312→          action: {
+  1313→            label: 'فتح',
+  1314→            onClick: () => {
+  1315→              useChatStore.getState().setActiveChannel(message.channelId);
+  1316→            },
+  1317→          },
+  1318→        });
+  1319→      } else if (message.dmId && message.dmId !== activeConversationId) {
+  1320→        toast.info(`${message.senderName || 'مستخدم'}: ${previewContent.slice(0, 60)}${previewContent.length > 60 ? '...' : ''}`, {
+  1321→          description: 'رسالة مباشرة',
+  1322→          action: {
+  1323→            label: 'فتح',
+  1324→            onClick: () => {
+  1325→              useChatStore.getState().setActiveConversation(message.dmId);
+  1326→            },
+  1327→          },
+  1328→        });
+  1329→      }
+  1330→    };
+  1331→    socket.current.on('new-message', handler);
+  1332→    return () => { socket.current?.off('new-message', handler); };
+  1333→  }, [socket, activeChannelId, activeConversationId, channels]);
+  1334→
+  1335→  // Load messages when channel/DM changes
+  1336→  useEffect(() => {
+  1337→    if (!token || activeView === 'none') return;
+  1338→
+  1339→    let url = '';
+  1340→    if (activeView === 'channels' && activeChannelId) {
+  1341→      url = `/api/channels/${activeChannelId}/messages`;
+  1342→    } else if (activeView === 'dm' && activeConversationId) {
+  1343→      url = `/api/dm/${activeConversationId}/messages`;
+  1344→    }
+  1345→    if (!url) return;
+  1346→
+  1347→    setLoadingMessages(true);
+  1348→    fetch(url, { headers: { Authorization: `Bearer ${token}` } })
+  1349→      .then((r) => r.json())
+  1350→      .then((d) => {
+  1351→        if (d.messages) useChatStore.getState().setMessages(d.messages);
+  1352→      })
+  1353→      .catch(console.error)
+  1354→      .finally(() => setLoadingMessages(false));
+  1355→  }, [token, activeView, activeChannelId, activeConversationId, setLoadingMessages]);
+  1356→
+  1357→  // Auto-scroll to bottom
+  1358→  useEffect(() => {
+  1359→    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  1360→  }, [messages, typingUsers]);
+  1361→
+  1362→  // Send encrypted message
+  1363→  const handleSend = useCallback(async () => {
+  1364→    if (!inputText.trim() || !token || sendingMessage) return;
+  1365→    setSendingMessage(true);
+  1366→
+  1367→    try {
+  1368→      const cryptoManager = CryptoManager.getInstance();
+  1369→
+  1370→      let encryptedContent = inputText;
+  1371→      let iv = '';
+  1372→
+  1373→      if (cryptoManager.isInitialized()) {
+  1374→        let payload;
+  1375→        if (activeView === 'channels' && activeChannelId) {
+  1376→          payload = await cryptoManager.encryptForChannel(inputText, activeChannelId);
+  1377→        } else {
+  1378→          payload = await cryptoManager.encryptForChannel(inputText, activeConversationId || 'dm-default');
+  1379→        }
+  1380→        encryptedContent = payload.content;
+  1381→        iv = payload.iv;
+  1382→      }
+  1383→
+  1384→      let apiUrl = '';
+  1385→      let channelId: string | undefined;
+  1386→      let dmId: string | undefined;
+  1387→
+  1388→      if (activeView === 'channels' && activeChannelId) {
+  1389→        apiUrl = `/api/channels/${activeChannelId}/messages`;
+  1390→        channelId = activeChannelId;
+  1391→      } else if (activeView === 'dm' && activeConversationId) {
+  1392→        apiUrl = `/api/dm/${activeConversationId}/messages`;
+  1393→        dmId = activeConversationId;
+  1394→      }
+  1395→
+  1396→      if (!apiUrl) return;
+  1397→
+  1398→      const res = await fetch(apiUrl, {
+  1399→        method: 'POST',
+  1400→        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+  1401→        body: JSON.stringify({
+  1402→          content: encryptedContent,
+  1403→          iv,
+  1404→          type: 'encrypted',
+  1405→          replyToId: replyTo?.id || null,
+  1406→        }),
+  1407→      });
+  1408→
+  1409→      const data = await res.json();
+  1410→
+  1411→      if (data.message) {
+  1412→        // Store plaintext for immediate display (before encryption cycle)
+  1413→        sentPlaintextRef.current[data.message.id] = inputText;
+  1414→
+  1415→        // Add message directly from API response (no socket echo needed for sender)
+  1416→        useChatStore.getState().addMessage(data.message);
+  1417→
+  1418→        // Broadcast to OTHER clients via socket (chat-service uses socket.broadcast.emit)
+  1419→        sendMessage({
+  1420→          ...data.message,
+  1421→          senderName: user?.name || '',
+  1422→          senderAvatar: user?.avatar || null,
+  1423→          senderRole: user?.role || '',
+  1424→          senderDepartment: user?.department || '',
+  1425→        });
+  1426→
+  1427→        stopTyping(channelId ? { channelId } : { dmId });
+  1428→      }
+  1429→
+  1430→      setInputText('');
+  1431→      setReplyTo(null);
+  1432→      inputRef.current?.focus();
+  1433→    } catch (err) {
+  1434→      console.error('Send error:', err);
+  1435→    } finally {
+  1436→      setSendingMessage(false);
+  1437→    }
+  1438→  }, [inputText, token, activeView, activeChannelId, activeConversationId, sendingMessage, replyTo, user, sendMessage, stopTyping]);
+  1439→
+  1440→  // Send file message
+  1441→  const handleFileSelected = useCallback(async (fileInfo: UploadedFile) => {
+  1442→    if (!token || sendingMessage) return;
+  1443→    setSendingMessage(true);
+  1444→
+  1445→    try {
+  1446→      let apiUrl = '';
+  1447→      if (activeView === 'channels' && activeChannelId) {
+  1448→        apiUrl = `/api/channels/${activeChannelId}/messages`;
+  1449→      } else if (activeView === 'dm' && activeConversationId) {
+  1450→        apiUrl = `/api/dm/${activeConversationId}/messages`;
+  1451→      }
+  1452→      if (!apiUrl) return;
+  1453→
+  1454→      const fileLabel = fileInfo.category === 'image'
+  1455→        ? '📷 صورة'
+  1456→        : fileInfo.category === 'pdf'
+  1457→          ? '📄 ملف PDF'
+  1458→          : '📝 مستند Word';
+  1459→
+  1460→      const caption = `${fileLabel}: ${fileInfo.originalName}`;
+  1461→      const metadata = JSON.stringify({
+  1462→        fileType: 'attachment',
+  1463→        file: {
+  1464→          url: fileInfo.url,
+  1465→          filename: fileInfo.originalName,
+  1466→          mimetype: fileInfo.mimetype,
+  1467→          size: fileInfo.size,
+  1468→          category: fileInfo.category,
+  1469→        },
+  1470→      });
+  1471→
+  1472→      const res = await fetch(apiUrl, {
+  1473→        method: 'POST',
+  1474→        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+  1475→        body: JSON.stringify({
+  1476→          content: caption,
+  1477→          type: 'file',
+  1478→          metadata,
+  1479→          replyToId: replyTo?.id || null,
+  1480→        }),
+  1481→      });
+  1482→
+  1483→      const data = await res.json();
+  1484→      if (data.message) {
+  1485→        sentPlaintextRef.current[data.message.id] = caption;
+  1486→        useChatStore.getState().addMessage(data.message);
+  1487→        sendMessage({
+  1488→          ...data.message,
+  1489→          senderName: user?.name || '',
+  1490→          senderAvatar: user?.avatar || null,
+  1491→          senderRole: user?.role || '',
+  1492→          senderDepartment: user?.department || '',
+  1493→        });
+  1494→      }
+  1495→
+  1496→      toast.success(`تم إرسال ${fileInfo.originalName}`);
+  1497→    } catch (err) {
+  1498→      console.error('File send error:', err);
+  1499→      toast.error('فشل إرسال الملف');
+  1500→    } finally {
+  1501→      setSendingMessage(false);
+  1502→    }
+  1503→  }, [token, activeView, activeChannelId, activeConversationId, sendingMessage, replyTo, user, sendMessage]);
+  1504→
+  1505→  // Typing indicator
+  1506→  const handleTyping = () => {
+  1507→    if (activeView === 'channels' && activeChannelId) {
+  1508→      sendTyping({ channelId: activeChannelId });
+  1509→    } else if (activeView === 'dm' && activeConversationId) {
+  1510→      sendTyping({ dmId: activeConversationId });
+  1511→    }
+  1512→
+  1513→    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+  1514→    typingTimeoutRef.current = setTimeout(() => {
+  1515→      if (activeView === 'channels' && activeChannelId) {
+  1516→        stopTyping({ channelId: activeChannelId });
+  1517→      } else if (activeView === 'dm' && activeConversationId) {
+  1518→        stopTyping({ dmId: activeConversationId });
+  1519→      }
+  1520→    }, 2000);
+  1521→  };
+  1522→
+  1523→  const handleKeyDown = (e: React.KeyboardEvent) => {
+  1524→    if (e.key === 'Enter' && !e.shiftKey) {
+  1525→      e.preventDefault();
+  1526→      handleSend();
+  1527→    }
+  1528→  };
+  1529→
+  1530→  const handleDeleteMessage = async (msg: Message) => {
+  1531→    if (!token || !activeChannelId) return;
+  1532→    try {
+  1533→      await fetch(`/api/channels/${activeChannelId}/messages/${msg.id}`, {
+  1534→        method: 'DELETE',
+  1535→        headers: { Authorization: `Bearer ${token}` },
+  1536→      });
+  1537→      useChatStore.getState().setMessages(messages.map((m) => m.id === msg.id ? { ...m, isDeleted: true, content: 'تم حذف هذه الرسالة' } : m));
+  1538→      toast.success('تم حذف الرسالة');
+  1539→    } catch {
+  1540→      toast.error('فشل في حذف الرسالة');
+  1541→    }
+  1542→  };
+  1543→
+  1544→  const handlePinMessage = async (msg: Message) => {
+  1545→    if (!token || !activeChannelId) return;
+  1546→    try {
+  1547→      const res = await fetch(`/api/channels/${activeChannelId}/messages/${msg.id}/pin`, {
+  1548→        method: 'POST',
+  1549→        headers: { Authorization: `Bearer ${token}` },
+  1550→      });
+  1551→      const data = await res.json();
+  1552→      if (data.message) {
+  1553→        useChatStore.getState().setMessages(messages.map((m) => m.id === msg.id ? { ...m, isPinned: data.message.isPinned } : m));
+  1554→        toast.success(data.message.isPinned ? 'تم تثبيت الرسالة' : 'تم إلغاء التثبيت');
+  1555→      }
+  1556→    } catch {
+  1557→      toast.error('فشل في تثبيت الرسالة');
+  1558→    }
+  1559→  };
+  1560→
+  1561→  const handleProfileClick = (sender: Message['sender']) => {
+  1562→    setProfileUser({
+  1563→      id: sender.id,
+  1564→      name: sender.name,
+  1565→      department: sender.department || null,
+  1566→      role: sender.role,
+  1567→    });
+  1568→    setProfileOpen(true);
+  1569→  };
+  1570→
+  1571→  // ---- Call helpers ----
+  1572→  const handleCallClick = (type: 'audio' | 'video') => {
+  1573→    // For DM conversations, start call directly with the other user
+  1574→    if (activeView === 'dm' && activeConversation) {
+  1575→      const otherUser = activeConversation.otherUser;
+  1576→      callHook.startCall(
+  1577→        { id: otherUser.id, name: otherUser.name, avatar: otherUser.avatar },
+  1578→        type,
+  1579→      );
+  1580→      return;
+  1581→    }
+  1582→    // For channels, show user picker
+  1583→    setPendingCallType(type);
+  1584→    setCallUserSearch('');
+  1585→    if (token) {
+  1586→      fetch('/api/users?excludeSelf=true', { headers: { Authorization: `Bearer ${token}` } })
+  1587→        .then((r) => r.json())
+  1588→        .then((d) => { if (d.users) setCallUsers(d.users); })
+  1589→        .catch(console.error);
+  1590→    }
+  1591→    setCallUserPickerOpen(true);
+  1592→  };
+  1593→
+  1594→  const initiateCallWithUser = (targetUser: { id: string; name: string; avatar?: string | null }) => {
+  1595→    if (pendingCallType) {
+  1596→      callHook.startCall(targetUser, pendingCallType);
+  1597→    }
+  1598→    setCallUserPickerOpen(false);
+  1599→    setPendingCallType(null);
+  1600→  };
+  1601→
+  1602→  const filteredCallUsers = callUsers.filter((u) =>
+  1603→    u.name.includes(callUserSearch) || (u.id && u.id.includes(callUserSearch)),
+  1604→  );
+  1605→
+  1606→  // Render date separators between messages
+  1607→  const renderMessages = () => {
+  1608→    const result: React.ReactNode[] = [];
+  1609→    let lastDate = '';
+  1610→
+  1611→    for (let i = 0; i < messages.length; i++) {
+  1612→      const msg = messages[i];
+  1613→      if (!isSameDay(msg.createdAt, lastDate)) {
+  1614→        lastDate = msg.createdAt;
+  1615→        result.push(
+  1616→          <div key={`sep-${msg.id}`} className="flex items-center gap-3 my-4 px-4">
+  1617→            <div className="flex-1 h-px bg-border" />
+  1618→            <span className="text-[11px] text-muted-foreground font-medium bg-[var(--tarsul-chat-bg)] px-3 py-1 rounded-full border border-border">
+  1619→              {getDateSeparator(msg.createdAt)}
+  1620→            </span>
+  1621→            <div className="flex-1 h-px bg-border" />
+  1622→          </div>
+  1623→        );
+  1624→      }
+  1625→      result.push(
+  1626→        <MessageBubble
+  1627→          key={msg.id}
+  1628→          msg={msg}
+  1629→          isOwn={msg.senderId === user?.id}
+  1630→          onReply={setReplyTo}
+  1631→          onDelete={handleDeleteMessage}
+  1632→          onPin={handlePinMessage}
+  1633→          onProfileClick={handleProfileClick}
+  1634→          displayContent={getDisplayContent(msg)}
+  1635→          readStatus={getReadStatus(msg)}
+  1636→        />
+  1637→      );
+  1638→    }
+  1639→    return result;
+  1640→  };
+  1641→
+  1642→  // Empty state with animated illustration
+  1643→  if (activeView === 'none') {
+  1644→    return (
+  1645→      <div className="flex-1 flex items-center justify-center bg-[var(--tarsul-chat-bg)]" dir="rtl">
+  1646→        <div className="text-center space-y-6 max-w-md px-6">
+  1647→          <div className="mx-auto w-28 h-28 bg-gradient-to-br from-emerald-100 to-teal-100 dark:from-emerald-900/30 dark:to-teal-900/30 rounded-3xl flex items-center justify-center animate-float">
+  1648→            <Shield className="w-14 h-14 text-emerald-600 dark:text-emerald-400" />
+  1649→          </div>
+  1650→          <div>
+  1651→            <h2 className="text-2xl font-bold text-foreground mb-2">مرحباً بك في تراسل</h2>
+  1652→            <p className="text-muted-foreground leading-relaxed">اختر قناة أو محادثة مباشرة من القائمة الجانبية للبدء في المراسلة المشفرة.</p>
+  1653→          </div>
+  1654→          <div className="flex items-center justify-center gap-4 text-sm text-muted-foreground">
+  1655→            <div className="flex items-center gap-1.5">
+  1656→              <Lock className="w-4 h-4 text-emerald-500" />
+  1657→              <span>AES-256-GCM</span>
+  1658→            </div>
+  1659→            <div className="flex items-center gap-1.5">
+  1660→              <KeyRound className="w-4 h-4 text-emerald-500" />
+  1661→              <span>RSA-OAEP</span>
+  1662→            </div>
+  1663→            <div className="flex items-center gap-1.5">
+  1664→              <ShieldCheck className="w-4 h-4 text-emerald-500" />
+  1665→              <span>E2EE</span>
+  1666→            </div>
+  1667→          </div>
+  1668→        </div>
+  1669→      </div>
+  1670→    );
+  1671→  }
+  1672→
+  1673→  return (
+  1674→    <div className="flex-1 flex flex-col h-full bg-[var(--tarsul-chat-bg)]">
+  1675→      {/* Channel/DM Header */}
+  1676→      <div className="h-14 border-b flex items-center justify-between px-4 bg-[var(--tarsul-header-bg)]" dir="rtl">
+  1677→        <div className="flex items-center gap-3">
+  1678→          <Button variant="ghost" size="icon" onClick={() => useChatStore.getState().toggleSidebar()} className="lg:hidden text-muted-foreground h-8 w-8">
+  1679→            <Menu className="w-5 h-5" />
+  1680→          </Button>
+  1681→          {activeView === 'channels' && activeChannel && (
+  1682→            <>
+  1683→              <span className="text-xl">{activeChannel.icon || '#'}</span>
+  1684→              <div>
+  1685→                <h3 className="font-semibold text-foreground text-sm">{activeChannel.name}</h3>
+  1686→                {activeChannel.description && (
+  1687→                  <p className="text-[11px] text-muted-foreground">{activeChannel.description}</p>
+  1688→                )}
+  1689→              </div>
+  1690→              <Badge variant="secondary" className="text-[10px] h-5 mr-2">
+  1691→                <Users className="w-3 h-3 ml-1" />
+  1692→                {activeChannel.memberCount || 0} عضو
+  1693→              </Badge>
+  1694→            </>
+  1695→          )}
+  1696→          {activeView === 'dm' && activeConversation && (
+  1697→            <div className="flex items-center gap-3">
+  1698→              <div className="relative">
+  1699→                <UserAvatar name={activeConversation.otherUser.name} size="md" />
+  1700→                <span className="absolute -bottom-0.5 -left-0.5">
+  1701→                  <StatusDot status={activeConversation.otherUser.status} />
+  1702→                </span>
+  1703→              </div>
+  1704→              <div>
+  1705→                <h3 className="font-semibold text-foreground text-sm">{activeConversation.otherUser.name}</h3>
+  1706→                <p className="text-[11px] text-muted-foreground">{activeConversation.otherUser.department || 'متصل الآن'}</p>
+  1707→              </div>
+  1708→            </div>
+  1709→          )}
+  1710→        </div>
+  1711→        <div className="flex items-center gap-1">
+  1712→          <EncryptionBadge />
+  1713→          <TooltipProvider>
+  1714→            <Tooltip>
+  1715→              <TooltipTrigger asChild>
+  1716→                <Button variant="ghost" size="icon" className="text-muted-foreground hover:text-foreground h-8 w-8" onClick={onOpenTweets}>
+  1717→                  <TrendingUp className="w-4 h-4" />
+  1718→                </Button>
+  1719→              </TooltipTrigger>
+  1720→              <TooltipContent side="left">تغريدات المؤسسة</TooltipContent>
+  1721→            </Tooltip>
+  1722→          </TooltipProvider>
+  1723→          <TooltipProvider>
+  1724→            <Tooltip>
+  1725→              <TooltipTrigger asChild>
+  1726→                <Button variant="ghost" size="icon" className="text-muted-foreground hover:text-foreground h-8 w-8" onClick={onOpenUsersPanel}>
+  1727→                  <PanelRight className="w-4 h-4" />
+  1728→                </Button>
+  1729→              </TooltipTrigger>
+  1730→              <TooltipContent side="left">قائمة الأعضاء</TooltipContent>
+  1731→            </Tooltip>
+  1732→          </TooltipProvider>
+  1733→          <Button variant="ghost" size="icon" className="text-muted-foreground hover:text-emerald-600 dark:hover:text-emerald-400 h-8 w-8" onClick={() => handleCallClick('audio')}>
+  1734→            <Phone className="w-4 h-4" />
+  1735→          </Button>
+  1736→          <Button variant="ghost" size="icon" className="text-muted-foreground hover:text-emerald-600 dark:hover:text-emerald-400 h-8 w-8" onClick={() => handleCallClick('video')}>
+  1737→            <Video className="w-4 h-4" />
+  1738→          </Button>
+  1739→          <TooltipProvider>
+  1740→            <Tooltip>
+  1741→              <TooltipTrigger asChild>
+  1742→                <Button variant="ghost" size="icon" className="text-muted-foreground hover:text-foreground h-8 w-8">
+  1743→                  <Search className="w-4 h-4" />
+  1744→                </Button>
+  1745→              </TooltipTrigger>
+  1746→              <TooltipContent side="left">بحث في الرسائل</TooltipContent>
+  1747→            </Tooltip>
+  1748→          </TooltipProvider>
+  1749→        </div>
+  1750→      </div>
+  1751→
+  1752→      {/* Pinned messages bar */}
+  1753→      <PinnedMessagesBar messages={messages} />
+  1754→
+  1755→      {/* Reply indicator */}
+  1756→      {replyTo && (
+  1757→        <div className="px-4 py-2 bg-muted border-b flex items-center justify-between" dir="rtl">
+  1758→          <div className="flex items-center gap-2 text-sm">
+  1759→            <Reply className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+  1760→            <span className="text-muted-foreground">رد على:</span>
+  1761→            <span className="font-medium text-foreground">{replyTo.sender.name}</span>
+  1762→            <span className="text-muted-foreground truncate max-w-[200px]">— {getDisplayContent(replyTo)}</span>
+  1763→          </div>
+  1764→          <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => setReplyTo(null)}>
+  1765→            <X className="w-3 h-3" />
+  1766→          </Button>
+  1767→        </div>
+  1768→      )}
+  1769→
+  1770→      {/* Messages area */}
+  1771→      <div className="flex-1 overflow-y-auto custom-scrollbar">
+  1772→        {loadingMessages ? (
+  1773→          <div className="flex items-center justify-center h-full">
+  1774→            <Loader2 className="w-6 h-6 text-emerald-500 animate-spin" />
+  1775→          </div>
+  1776→        ) : messages.length === 0 ? (
+  1777→          <div className="flex items-center justify-center h-48 text-muted-foreground text-sm" dir="rtl">
+  1778→            <div className="text-center">
+  1779→              <ShieldCheck className="w-12 h-12 mx-auto mb-3 text-emerald-300 dark:text-emerald-700" />
+  1780→              <p className="font-medium">لا توجد رسائل بعد</p>
+  1781→              <p className="text-xs mt-1">أرسل أول رسالة مشفرة! 🔐</p>
+  1782→            </div>
+  1783→          </div>
+  1784→        ) : (
+  1785→          <div className="py-4">
+  1786→            {renderMessages()}
+  1787→            <div ref={messagesEndRef} />
+  1788→          </div>
+  1789→        )}
+  1790→        <TypingIndicator names={typingUsers} />
+  1791→      </div>
+  1792→
+  1793→      {/* Message Input */}
+  1794→      <div className="border-t p-3 bg-card" dir="rtl">
+  1795→        <div className="message-input-glow flex items-center gap-2 bg-[var(--tarsul-input-bg)] rounded-xl border border-border px-3 py-1.5">
+  1796→          <Button variant="ghost" size="icon" className="text-muted-foreground hover:text-emerald-600 dark:hover:text-emerald-400 h-8 w-8 flex-shrink-0" onClick={() => setFileUploadOpen(true)}>
+  1797→            <Paperclip className="w-4 h-4" />
+  1798→          </Button>
+  1799→          <Input
+  1800→            ref={inputRef}
+  1801→            value={inputText}
+  1802→            onChange={(e) => { setInputText(e.target.value); handleTyping(); }}
+  1803→            onKeyDown={handleKeyDown}
+  1804→            placeholder="اكتب رسالة مشفرة..."
+  1805→            className="border-0 bg-transparent focus-visible:ring-0 h-9 text-sm px-1 text-foreground placeholder:text-muted-foreground"
+  1806→            disabled={sendingMessage}
+  1807→          />
+  1808→          <div className="flex items-center gap-0.5 flex-shrink-0 relative">
+  1809→            <Button variant="ghost" size="icon" className="text-muted-foreground hover:text-foreground h-8 w-8">
+  1810→              <AtSign className="w-4 h-4" />
+  1811→            </Button>
+  1812→            <Button
+  1813→              variant="ghost"
+  1814→              size="icon"
+  1815→              className="text-muted-foreground hover:text-foreground h-8 w-8"
+  1816→              onClick={() => setShowEmoji(!showEmoji)}
+  1817→            >
+  1818→              <Smile className="w-4 h-4" />
+  1819→            </Button>
+  1820→            {showEmoji && (
+  1821→              <EmojiPicker
+  1822→                onSelect={(emoji) => setInputText((prev) => prev + emoji)}
+  1823→                onClose={() => setShowEmoji(false)}
+  1824→              />
+  1825→            )}
+  1826→            <Button variant="ghost" size="icon" className="text-muted-foreground hover:text-foreground h-8 w-8">
+  1827→              <Mic className="w-4 h-4" />
+  1828→            </Button>
+  1829→            <Button
+  1830→              onClick={handleSend}
+  1831→              disabled={!inputText.trim() || sendingMessage}
+  1832→              className="h-8 w-8 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg flex-shrink-0 disabled:opacity-40"
+  1833→              size="icon"
+  1834→            >
+  1835→              {sendingMessage ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+  1836→            </Button>
+  1837→          </div>
+  1838→        </div>
+  1839→        <div className="flex items-center justify-between mt-1.5 px-1">
+  1840→          <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
+  1841→            <Lock className="w-3 h-3 text-emerald-500 dark:text-emerald-400" />
+  1842→            <span>الرسالة ستكون مشفرة من الطرف إلى الطرف</span>
+  1843→          </div>
+  1844→          <div className="flex items-center gap-2">
+  1845→            {inputText.length > 500 && (
+  1846→              <span className={`text-[10px] ${inputText.length > 2000 ? 'text-red-500' : 'text-amber-500'}`}>
+  1847→                {inputText.length} / 2000
+  1848→              </span>
+  1849→            )}
+  1850→            <span className="text-[10px] text-muted-foreground">
+  1851→              <KeyRound className="w-3 h-3 inline" /> AES-256-GCM
+  1852→            </span>
+  1853→          </div>
+  1854→        </div>
+  1855→      </div>
+  1856→
+  1857→      <UserProfileDialog user={profileUser} open={profileOpen} onOpenChange={setProfileOpen} />
+  1858→
+  1859→      {/* File Upload Dialog */}
+  1860→      <FileUploadDialog
+  1861→        open={fileUploadOpen}
+  1862→        onOpenChange={setFileUploadOpen}
+  1863→        onFileSelected={handleFileSelected}
+  1864→        token={token || ''}
+  1865→      />
+  1866→
+  1867→      {/* Call overlays */}
+  1868→      <CallDialog
+  1869→        target={callHook.callState === 'ringing' || callHook.callState === 'connecting' ? callHook.callTarget : null}
+  1870→        callType={callHook.callType}
+  1871→        onCancel={callHook.hangUp}
+  1872→      />
+  1873→      <IncomingCallDialog
+  1874→        caller={callHook.incomingCall}
+  1875→        onAccept={callHook.answerCall}
+  1876→        onReject={callHook.rejectCall}
+  1877→      />
+  1878→      <ActiveCallScreen
+  1879→        target={callHook.callState === 'active' || callHook.callState === 'connecting' ? callHook.callTarget : null}
+  1880→        callType={callHook.callType}
+  1881→        duration={callHook.callDuration}
+  1882→        isMuted={callHook.isMuted}
+  1883→        isVideoOff={callHook.isVideoOff}
+  1884→        remoteStream={callHook.remoteStream}
+  1885→        localStream={callHook.localStream}
+  1886→        onToggleMute={callHook.toggleMute}
+  1887→        onToggleVideo={callHook.toggleVideo}
+  1888→        onHangUp={callHook.hangUp}
+  1889→      />
+  1890→
+  1891→      {/* Call user picker dialog (for channel calls) */}
+  1892→      <Dialog open={callUserPickerOpen} onOpenChange={setCallUserPickerOpen}>
+  1893→        <DialogContent dir="rtl" className="sm:max-w-sm">
+  1894→          <DialogHeader>
+  1895→            <DialogTitle className="flex items-center gap-2">
+  1896→              {pendingCallType === 'video' ? <Video className="w-5 h-5 text-emerald-600" /> : <Phone className="w-5 h-5 text-emerald-600" />}
+  1897→              اختر مستخدماً للمكالمة
+  1898→            </DialogTitle>
+  1899→          </DialogHeader>
+  1900→          <Input
+  1901→            placeholder="ابحث عن مستخدم..."
+  1902→            value={callUserSearch}
+  1903→            onChange={(e) => setCallUserSearch(e.target.value)}
+  1904→            className="mb-3"
+  1905→          />
+  1906→          <ScrollArea className="max-h-64">
+  1907→            <div className="space-y-1">
+  1908→              {filteredCallUsers.length === 0 && (
+  1909→                <p className="text-sm text-muted-foreground text-center py-4">لا يوجد مستخدمين</p>
+  1910→              )}
+  1911→              {filteredCallUsers.map((u) => (
+  1912→                <button
+  1913→                  key={u.id}
+  1914→                  onClick={() => initiateCallWithUser({ id: u.id, name: u.name, avatar: u.avatar })}
+  1915→                  className="w-full flex items-center gap-3 p-2.5 rounded-lg hover:bg-emerald-50 dark:hover:bg-emerald-900/20 text-right transition-colors group"
+  1916→                >
+  1917→                  <Avatar className="w-9 h-9">
+  1918→                    <AvatarFallback className="bg-gradient-to-br from-emerald-400 to-teal-500 text-white text-sm">
+  1919→                      {u.name.charAt(0)}
+  1920→                    </AvatarFallback>
+  1921→                  </Avatar>
+  1922→                  <div className="flex-1 min-w-0">
+  1923→                    <p className="text-sm font-medium text-foreground truncate">{u.name}</p>
+  1924→                    <p className="text-xs text-muted-foreground">{u.status === 'online' ? 'متصل' : 'غير متصل'}</p>
+  1925→                  </div>
+  1926→                  <span className="text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity">
+  1927→                    {pendingCallType === 'video' ? <Video className="w-4 h-4" /> : <Phone className="w-4 h-4" />}
+  1928→                  </span>
+  1929→                </button>
+  1930→              ))}
+  1931→            </div>
+  1932→          </ScrollArea>
+  1933→        </DialogContent>
+  1934→      </Dialog>
+  1935→    </div>
+  1936→  );
+  1937→}
+  1938→
+  1939→// ========================
+  1940→// Main Chat Layout
+  1941→// ========================
+  1942→export default function ChatLayout() {
+  1943→  const [usersPanelOpen, setUsersPanelOpen] = useState(false);
+  1944→  const [tweetsPanelOpen, setTweetsPanelOpen] = useState(false);
+  1945→
+  1946→  return (
+  1947→    <div className="flex h-screen bg-background overflow-hidden" dir="rtl">
+  1948→      <ChannelSidebar />
+  1949→      <ChatArea
+  1950→        onOpenUsersPanel={() => { setUsersPanelOpen(true); setTweetsPanelOpen(false); }}
+  1951→        onOpenTweets={() => { setTweetsPanelOpen(true); setUsersPanelOpen(false); }}
+  1952→      />
+  1953→      <OnlineUsersPanel open={usersPanelOpen && !tweetsPanelOpen} onClose={() => setUsersPanelOpen(false)} />
+  1954→      <TweetsPanel open={tweetsPanelOpen} onClose={() => setTweetsPanelOpen(false)} />
+  1955→    </div>
+  1956→  );
+  1957→}
