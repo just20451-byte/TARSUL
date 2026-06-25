@@ -25,7 +25,7 @@ export default function SocketDemo() {
   const [inputMessage, setInputMessage] = useState('');
   const [username, setUsername] = useState('');
   const [isUsernameSet, setIsUsernameSet] = useState(false);
-  const [socket, setSocket] = useState<any>(null);
+  const [socket, setSocket] = useState<ReturnType<typeof io> | null>(null);
   const [isConnected, setIsConnected] = useState(false);
   const [users, setUsers] = useState<User[]>([]);
 
